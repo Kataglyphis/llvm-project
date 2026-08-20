@@ -503,8 +503,10 @@ class ConvertCastOpWithBoundsChecking
                                                     rewriter)))
       return failure();
 
+    tosa::CastOp::Properties properties = op.getProperties();
     rewriter.replaceOpWithNewOp<tosa::CastOp>(
-        op, typeConverter->convertType(resultType), adaptor.getInput(),
+        op, TypeRange{typeConverter->convertType(resultType)},
+        ValueRange{adaptor.getInput()}, properties,
         op->getDiscardableAttrDictionary().getValue());
     return success();
   }

@@ -96,8 +96,10 @@ VecOpToScalarOp<Op>::matchAndRewrite(Op op, PatternRewriter &rewriter) const {
     for (auto input : op->getOperands())
       operands.push_back(
           vector::ExtractOp::create(rewriter, loc, input, positions));
+    typename Op::Properties properties = op.getProperties();
     Value scalarOp =
-        Op::create(rewriter, loc, vecType.getElementType(), operands);
+        Op::create(rewriter, loc, TypeRange{vecType.getElementType()}, operands,
+                   properties, op->getDiscardableAttrDictionary().getValue());
     result =
         vector::InsertOp::create(rewriter, loc, scalarOp, result, positions);
   }
@@ -116,9 +118,14 @@ PromoteOpToF32<Op>::matchAndRewrite(Op op, PatternRewriter &rewriter) const {
   auto f32 = rewriter.getF32Type();
   auto extendedOperands =
       llvm::map_to_vector(op->getOperands(), [&](Value operand) -> Value {
-        return arith::ExtFOp::create(rewriter, loc, f32, operand);
+        return arith::ExtFOp::create(rewriter, loc, TypeRange{f32},
+                                     ValueRange{operand},
+                                     arith::ExtFOp::Properties{});
       });
-  auto newOp = Op::create(rewriter, loc, f32, extendedOperands);
+  typename Op::Properties properties = op.getProperties();
+  auto newOp =
+      Op::create(rewriter, loc, TypeRange{f32}, extendedOperands, properties,
+                 op->getDiscardableAttrDictionary().getValue());
   rewriter.replaceOpWithNewOp<arith::TruncFOp>(op, opType, newOp);
   return success();
 }

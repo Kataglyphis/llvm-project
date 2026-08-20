@@ -69,15 +69,6 @@ static const char *const propertyValue = "propValue";
 static const char *const propertyAttr = "propAttr";
 static const char *const propertyDiag = "emitError";
 
-/// The names of the implicit attributes that contain variadic operand and
-/// result segment sizes.
-static const char *const operandSegmentAttrName = "operandSegmentSizes";
-static const char *const resultSegmentAttrName = "resultSegmentSizes";
-static constexpr StringLiteral legacyOperandSegmentAttrName =
-    "operand_segment_sizes";
-static constexpr StringLiteral legacyResultSegmentAttrName =
-    "result_segment_sizes";
-
 /// Code for an Op to lookup an attribute. Uses cached identifiers and subrange
 /// lookup.
 ///
@@ -433,18 +424,7 @@ public:
 
   /// Returns whether the operation will have a non-empty `Properties` struct.
   bool hasNonEmptyPropertiesStruct() const {
-    if (!op.getProperties().empty())
-      return true;
-    if (!hasProperties())
-      return false;
-    if (op.getTrait("::mlir::OpTrait::AttrSizedOperandSegments") ||
-        op.getTrait("::mlir::OpTrait::AttrSizedResultSegments"))
-      return true;
-    return llvm::any_of(getAttrMetadata(),
-                        [](const std::pair<StringRef, AttributeMetadata> &it) {
-                          return !it.second.constraint ||
-                                 !it.second.constraint->isDerivedAttr();
-                        });
+    return hasProperties() && op.hasNonEmptyProperties();
   }
 
   std::optional<NamedProperty> &getOperandSegmentsSize() {
@@ -2727,21 +2707,7 @@ void OpEmitter::genLegacyPropertiesBuilderHelper() {
   if (!emitHelper.hasNonEmptyPropertiesStruct())
     return;
 
-  SmallVector<StringRef> inherentNames;
-  for (const ConstArgument &attrOrProperty : getAttrOrProperties()) {
-    if (const auto *namedAttr =
-            dyn_cast_if_present<const AttributeMetadata *>(attrOrProperty))
-      inherentNames.push_back(namedAttr->attrName);
-    else
-      inherentNames.push_back(
-          cast<const NamedProperty *>(attrOrProperty)->name);
-  }
-  if (emitHelper.getOperandSegmentsSize()) {
-    inherentNames.push_back(legacyOperandSegmentAttrName);
-  }
-  if (emitHelper.getResultSegmentsSize()) {
-    inherentNames.push_back(legacyResultSegmentAttrName);
-  }
+  SmallVector<StringRef> inherentNames = op.getInherentAttrNames();
   llvm::sort(inherentNames);
   inherentNames.erase(llvm::unique(inherentNames), inherentNames.end());
 

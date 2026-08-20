@@ -128,8 +128,10 @@ VecOpToScalarOp<Op>::matchAndRewrite(Op op, PatternRewriter &rewriter) const {
     for (Value input : op->getOperands())
       operands.push_back(
           vector::ExtractOp::create(rewriter, loc, input, positions));
+    typename Op::Properties properties = op.getProperties();
     Value scalarOp =
-        Op::create(rewriter, loc, vecType.getElementType(), operands);
+        Op::create(rewriter, loc, TypeRange{vecType.getElementType()}, operands,
+                   properties, op->getDiscardableAttrDictionary().getValue());
     result =
         vector::InsertOp::create(rewriter, loc, scalarOp, result, positions);
   }

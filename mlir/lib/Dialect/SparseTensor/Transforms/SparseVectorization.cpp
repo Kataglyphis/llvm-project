@@ -385,9 +385,12 @@ static bool vectorizeSubscripts(PatternRewriter &rewriter, scf::ForOp forOp,
 }
 
 #define UNAOP(xxx)                                                             \
-  if (isa<xxx>(def)) {                                                         \
-    if (codegen)                                                               \
-      vexp = xxx::create(rewriter, loc, vx);                                   \
+  if (auto x = dyn_cast<xxx>(def)) {                                           \
+    if (codegen) {                                                             \
+      typename xxx::Properties properties = x.getProperties();                 \
+      vexp = xxx::create(rewriter, loc, ValueRange{vx}, properties,            \
+                         x->getDiscardableAttrDictionary().getValue());        \
+    }                                                                          \
     return true;                                                               \
   }
 
@@ -395,15 +398,21 @@ static bool vectorizeSubscripts(PatternRewriter &rewriter, scf::ForOp forOp,
   if (auto x = dyn_cast<xxx>(def)) {                                           \
     if (codegen) {                                                             \
       VectorType vtp = vectorType(vl, x.getType());                            \
-      vexp = xxx::create(rewriter, loc, vtp, vx);                              \
+      typename xxx::Properties properties = x.getProperties();                 \
+      vexp = xxx::create(rewriter, loc, TypeRange{vtp}, ValueRange{vx},        \
+                         properties,                                           \
+                         x->getDiscardableAttrDictionary().getValue());        \
     }                                                                          \
     return true;                                                               \
   }
 
 #define BINOP(xxx)                                                             \
-  if (isa<xxx>(def)) {                                                         \
-    if (codegen)                                                               \
-      vexp = xxx::create(rewriter, loc, vx, vy);                               \
+  if (auto x = dyn_cast<xxx>(def)) {                                           \
+    if (codegen) {                                                             \
+      typename xxx::Properties properties = x.getProperties();                 \
+      vexp = xxx::create(rewriter, loc, ValueRange{vx, vy}, properties,        \
+                         x->getDiscardableAttrDictionary().getValue());        \
+    }                                                                          \
     return true;                                                               \
   }
 
