@@ -62,6 +62,8 @@ static const char *const odsBuilder = "odsBuilder";
 static const char *const builderOpState = "odsState";
 static const char *const builderOpStateProperties =
     "odsState.getOrAddProperties<Properties>()";
+static constexpr StringLiteral legacyBuilderDeprecation =
+    "use the overload taking Properties and discardableAttributes instead";
 static const char *const propertyStorage = "propStorage";
 static const char *const propertyValue = "propValue";
 static const char *const propertyAttr = "propAttr";
@@ -71,6 +73,10 @@ static const char *const propertyDiag = "emitError";
 /// result segment sizes.
 static const char *const operandSegmentAttrName = "operandSegmentSizes";
 static const char *const resultSegmentAttrName = "resultSegmentSizes";
+static constexpr StringLiteral legacyOperandSegmentAttrName =
+    "operand_segment_sizes";
+static constexpr StringLiteral legacyResultSegmentAttrName =
+    "result_segment_sizes";
 
 /// Code for an Op to lookup an attribute. Uses cached identifiers and subrange
 /// lookup.
@@ -555,15 +561,12 @@ void OpOrAdaptorHelper::computeAttrMetadata() {
   // Store the position of the legacy operand_segment_sizes /
   // result_segment_sizes so we can emit a backward compatible property readers
   // and writers.
-  StringRef legacyOperandSegmentSizeName =
-      StringLiteral("operand_segment_sizes");
-  StringRef legacyResultSegmentSizeName = StringLiteral("result_segment_sizes");
   operandSegmentSizesLegacyIndex = 0;
   resultSegmentSizesLegacyIndex = 0;
   for (auto item : sortedAttrMetadata) {
-    if (item.attrName < legacyOperandSegmentSizeName)
+    if (item.attrName < legacyOperandSegmentAttrName)
       ++operandSegmentSizesLegacyIndex;
-    if (item.attrName < legacyResultSegmentSizeName)
+    if (item.attrName < legacyResultSegmentAttrName)
       ++resultSegmentSizesLegacyIndex;
   }
 
@@ -602,6 +605,10 @@ public:
 private:
   OpEmitter(const Operator &op,
             const StaticVerifierFunctionEmitter &staticVerifierEmitter);
+
+  // Returns the inherent attributes and properties represented by the
+  // operation's Properties struct.
+  SmallVector<ConstArgument> getAttrOrProperties();
 
   void emitDecl(raw_ostream &os);
   void emitDef(raw_ostream &os);
@@ -661,7 +668,8 @@ private:
   // Generates the build() method that takes each operand/attribute
   // as a stand-alone parameter.
   void genSeparateArgParamBuilder();
-  void genInlineCreateBody(const SmallVector<MethodParameter> &paramList);
+  void genInlineCreateBody(const SmallVector<MethodParameter> &paramList,
+                           bool deprecated = false);
 
   // Generates the build() method that takes each operand/attribute as a
   // stand-alone parameter. The generated build() method uses first operand's
@@ -675,6 +683,15 @@ private:
     AttrDict,   // Inherent attributes/properties are passed by attribute
                 // dictionary
   };
+
+  // Generates the internal helper used by legacy aggregate builders to split
+  // inherent properties from discardable attributes.
+  void genLegacyPropertiesBuilderHelper();
+
+  // Adds aggregate properties and attributes to the operation state.
+  void genCodeForAddingPropertiesAndAttributes(MethodBody &body,
+                                               CollectiveBuilderKind kind,
+                                               StringRef attributesName);
 
   // Generates the build() method that takes all operands/attributes
   // collectively as one parameter. The generated build() method uses first
@@ -1353,10 +1370,7 @@ static void emitAttrGetterWithReturnType(FmtContext &fctx,
        << ";\n";
 }
 
-void OpEmitter::genPropertiesSupport() {
-  if (!emitHelper.hasProperties())
-    return;
-
+SmallVector<OpEmitter::ConstArgument> OpEmitter::getAttrOrProperties() {
   SmallVector<ConstArgument> attrOrProperties;
   for (const std::pair<StringRef, AttributeMetadata> &it :
        emitHelper.getAttrMetadata()) {
@@ -1369,6 +1383,14 @@ void OpEmitter::genPropertiesSupport() {
     attrOrProperties.push_back(&emitHelper.getOperandSegmentsSize().value());
   if (emitHelper.getResultSegmentsSize())
     attrOrProperties.push_back(&emitHelper.getResultSegmentsSize().value());
+  return attrOrProperties;
+}
+
+void OpEmitter::genPropertiesSupport() {
+  if (!emitHelper.hasProperties())
+    return;
+
+  SmallVector<ConstArgument> attrOrProperties = getAttrOrProperties();
   auto &setPropMethod =
       opClass
           .addStaticMethod(
@@ -1472,11 +1494,13 @@ void OpEmitter::genPropertiesSupport() {
       os << "   auto attr = dict.get(\"" << name << "\");";
       if (name == operandSegmentAttrName) {
         // Backward compat for now, TODO: Remove at some point.
-        os << "   if (!attr) attr = dict.get(\"operand_segment_sizes\");";
+        os << "   if (!attr) attr = dict.get(\"" << legacyOperandSegmentAttrName
+           << "\");";
       }
       if (name == resultSegmentAttrName) {
         // Backward compat for now, TODO: Remove at some point.
-        os << "   if (!attr) attr = dict.get(\"result_segment_sizes\");";
+        os << "   if (!attr) attr = dict.get(\"" << legacyResultSegmentAttrName
+           << "\");";
       }
 
       fctx.withBuilder(odsBuilder);
@@ -1506,11 +1530,13 @@ void OpEmitter::genPropertiesSupport() {
       os << "   auto attr = dict.get(\"" << name << "\");";
       if (name == operandSegmentAttrName) {
         // Backward compat for now
-        os << "   if (!attr) attr = dict.get(\"operand_segment_sizes\");";
+        os << "   if (!attr) attr = dict.get(\"" << legacyOperandSegmentAttrName
+           << "\");";
       }
       if (name == resultSegmentAttrName) {
         // Backward compat for now
-        os << "   if (!attr) attr = dict.get(\"result_segment_sizes\");";
+        os << "   if (!attr) attr = dict.get(\"" << legacyResultSegmentAttrName
+           << "\");";
       }
 
       setPropMethod << formatv(R"decl(
@@ -1663,14 +1689,12 @@ void OpEmitter::genPropertiesSupport() {
     fctx.addSubst("_storage", Twine("prop.") + name);
     if (name == operandSegmentAttrName) {
       getInherentAttrMethod
-          << formatv("    if (name == \"operand_segment_sizes\" || name == "
-                     "\"{0}\") return ",
-                     operandSegmentAttrName);
+          << formatv("    if (name == \"{0}\" || name == \"{1}\") return ",
+                     legacyOperandSegmentAttrName, operandSegmentAttrName);
     } else {
       getInherentAttrMethod
-          << formatv("    if (name == \"result_segment_sizes\" || name == "
-                     "\"{0}\") return ",
-                     resultSegmentAttrName);
+          << formatv("    if (name == \"{0}\" || name == \"{1}\") return ",
+                     legacyResultSegmentAttrName, resultSegmentAttrName);
     }
     getInherentAttrMethod << "[&]() -> ::mlir::Attribute { "
                           << tgfmt(prop.getConvertToAttributeCall(), &fctx)
@@ -1678,14 +1702,12 @@ void OpEmitter::genPropertiesSupport() {
 
     if (name == operandSegmentAttrName) {
       setInherentAttrMethod
-          << formatv("        if (name == \"operand_segment_sizes\" || name == "
-                     "\"{0}\") {{",
-                     operandSegmentAttrName);
+          << formatv("        if (name == \"{0}\" || name == \"{1}\") {{",
+                     legacyOperandSegmentAttrName, operandSegmentAttrName);
     } else {
       setInherentAttrMethod
-          << formatv("        if (name == \"result_segment_sizes\" || name == "
-                     "\"{0}\") {{",
-                     resultSegmentAttrName);
+          << formatv("        if (name == \"{0}\" || name == \"{1}\") {{",
+                     legacyResultSegmentAttrName, resultSegmentAttrName);
     }
     setInherentAttrMethod << formatv(R"decl(
        auto arrAttr = ::llvm::dyn_cast_or_null<::mlir::DenseI32ArrayAttr>(value);
@@ -2529,7 +2551,7 @@ static bool canInferType(const Operator &op) {
 }
 
 void OpEmitter::genInlineCreateBody(
-    const SmallVector<MethodParameter> &paramList) {
+    const SmallVector<MethodParameter> &paramList, bool deprecated) {
   SmallVector<MethodParameter> createParamListOpBuilder;
   SmallVector<MethodParameter> createParamListImplicitLocOpBuilder;
   SmallVector<llvm::StringRef, 4> nonBuilderStateArgsList;
@@ -2560,6 +2582,12 @@ void OpEmitter::genInlineCreateBody(
                                            createParamListOpBuilder);
   auto *cImplicitLoc = opClass.addStaticMethod(
       opClass.getClassName(), "create", createParamListImplicitLocOpBuilder);
+  if (deprecated) {
+    if (cWithLoc)
+      cWithLoc->setDeprecated(legacyBuilderDeprecation);
+    if (cImplicitLoc)
+      cImplicitLoc->setDeprecated(legacyBuilderDeprecation);
+  }
   std::string nonBuilderStateArgs = "";
   if (!nonBuilderStateArgsList.empty()) {
     llvm::raw_string_ostream nonBuilderStateArgsOS(nonBuilderStateArgs);
@@ -2695,6 +2723,82 @@ void OpEmitter::genSeparateArgParamBuilder() {
   }
 }
 
+void OpEmitter::genLegacyPropertiesBuilderHelper() {
+  if (!emitHelper.hasNonEmptyPropertiesStruct())
+    return;
+
+  SmallVector<StringRef> inherentNames;
+  for (const ConstArgument &attrOrProperty : getAttrOrProperties()) {
+    if (const auto *namedAttr =
+            dyn_cast_if_present<const AttributeMetadata *>(attrOrProperty))
+      inherentNames.push_back(namedAttr->attrName);
+    else
+      inherentNames.push_back(
+          cast<const NamedProperty *>(attrOrProperty)->name);
+  }
+  if (emitHelper.getOperandSegmentsSize()) {
+    inherentNames.push_back(legacyOperandSegmentAttrName);
+  }
+  if (emitHelper.getResultSegmentsSize()) {
+    inherentNames.push_back(legacyResultSegmentAttrName);
+  }
+  llvm::sort(inherentNames);
+  inherentNames.erase(llvm::unique(inherentNames), inherentNames.end());
+
+  auto *method = opClass.addStaticMethod<Method::Private>(
+      "void", "buildPropertiesAndDiscardableAttributes",
+      MethodParameter("::mlir::OperationState &", builderOpState),
+      MethodParameter("::llvm::ArrayRef<::mlir::NamedAttribute>",
+                      "attributes"));
+  ERROR_IF_PRUNED(method, "buildPropertiesAndDiscardableAttributes", op);
+  MethodBody &body = method->body();
+  body << "  Properties &properties = " << builderOpStateProperties << ";\n"
+       << "  populateDefaultProperties(" << builderOpState
+       << ".name, properties);\n"
+       << "  ::llvm::SmallVector<::mlir::NamedAttribute> "
+          "inherentAttributes;\n"
+       << "  for (const ::mlir::NamedAttribute &attr : attributes) {\n"
+       << "    ::llvm::StringRef name = attr.getName().getValue();\n"
+       << "    if (";
+  llvm::interleave(
+      inherentNames,
+      [&](StringRef name) { body << "name == \"" << name << "\""; },
+      [&] { body << " || "; });
+  body << ")\n"
+       << "      inherentAttributes.push_back(attr);\n"
+       << "    else\n"
+       << "      " << builderOpState << ".addAttribute(attr.getName(), "
+       << "attr.getValue());\n"
+       << "  }\n"
+       << "  if (inherentAttributes.empty())\n"
+       << "    return;\n"
+       << "  if (::mlir::failed(setPropertiesFromAttr(\n"
+       << "          properties,\n"
+       << "          ::mlir::DictionaryAttr::get(" << builderOpState
+       << ".getContext(), inherentAttributes),\n"
+       << "          [&]() { return ::mlir::emitError(" << builderOpState
+       << ".location); })))\n"
+       << "    ::llvm::report_fatal_error(\"Property conversion failed.\");\n";
+}
+
+void OpEmitter::genCodeForAddingPropertiesAndAttributes(
+    MethodBody &body, CollectiveBuilderKind kind, StringRef attributesName) {
+  if (kind == CollectiveBuilderKind::PropStruct) {
+    body << "  " << builderOpState
+         << ".useProperties(const_cast<Properties&>(properties));\n"
+         << "  " << builderOpState << ".addAttributes(" << attributesName
+         << ");\n";
+    return;
+  }
+  if (emitHelper.hasNonEmptyPropertiesStruct()) {
+    body << "  buildPropertiesAndDiscardableAttributes(" << builderOpState
+         << ", " << attributesName << ");\n";
+    return;
+  }
+  body << "  " << builderOpState << ".addAttributes(" << attributesName
+       << ");\n";
+}
+
 void OpEmitter::genUseOperandAsResultTypeCollectiveParamBuilder(
     CollectiveBuilderKind kind) {
   int numResults = op.getNumResults();
@@ -2720,18 +2824,17 @@ void OpEmitter::genUseOperandAsResultTypeCollectiveParamBuilder(
   // If the builder is redundant, skip generating the method
   if (!m)
     return;
-  genInlineCreateBody(paramList);
+  bool deprecated = kind == CollectiveBuilderKind::AttrDict &&
+                    emitHelper.hasNonEmptyPropertiesStruct();
+  if (deprecated)
+    m->setDeprecated(legacyBuilderDeprecation);
+  genInlineCreateBody(paramList, deprecated);
   auto &body = m->body();
 
   // Operands
   body << "  " << builderOpState << ".addOperands(operands);\n";
 
-  if (kind == CollectiveBuilderKind::PropStruct)
-    body << "  " << builderOpState
-         << ".useProperties(const_cast<Properties&>(properties));\n";
-  // Attributes
-  body << "  " << builderOpState << ".addAttributes(" << attributesName
-       << ");\n";
+  genCodeForAddingPropertiesAndAttributes(body, kind, attributesName);
 
   // Create the correct number of regions
   if (int numRegions = op.getNumRegions()) {
@@ -2835,7 +2938,11 @@ void OpEmitter::genInferredTypeCollectiveParamBuilder(
   // If the builder is redundant, skip generating the method
   if (!m)
     return;
-  genInlineCreateBody(paramList);
+  bool deprecated = kind == CollectiveBuilderKind::AttrDict &&
+                    emitHelper.hasNonEmptyPropertiesStruct();
+  if (deprecated)
+    m->setDeprecated(legacyBuilderDeprecation);
+  genInlineCreateBody(paramList, deprecated);
   auto &body = m->body();
 
   int numResults = op.getNumResults();
@@ -2853,11 +2960,7 @@ void OpEmitter::genInferredTypeCollectiveParamBuilder(
          << numNonVariadicOperands
          << "u && \"mismatched number of parameters\");\n";
   body << "  " << builderOpState << ".addOperands(operands);\n";
-  if (kind == CollectiveBuilderKind::PropStruct)
-    body << "  " << builderOpState
-         << ".useProperties(const_cast<Properties &>(properties));\n";
-  body << "  " << builderOpState << ".addAttributes(" << attributesName
-       << ");\n";
+  genCodeForAddingPropertiesAndAttributes(body, kind, attributesName);
 
   // Create the correct number of regions
   if (int numRegions = op.getNumRegions()) {
@@ -2868,22 +2971,6 @@ void OpEmitter::genInferredTypeCollectiveParamBuilder(
   }
 
   // Result types
-  if (emitHelper.hasNonEmptyPropertiesStruct() &&
-      kind == CollectiveBuilderKind::AttrDict) {
-    // Initialize the properties from Attributes before invoking the infer
-    // function.
-    body << formatv(R"(
-  if (!attributes.empty()) {
-    (void){1}.getOrAddProperties<{0}::Properties>();
-    ::mlir::PropertyRef properties = {1}.getRawProperties();
-    std::optional<::mlir::RegisteredOperationName> info =
-      {1}.name.getRegisteredInfo();
-    if (failed(info->setOpPropertiesFromAttribute({1}.name, properties,
-        {1}.attributes.getDictionary({1}.getContext()), nullptr)))
-      ::llvm::report_fatal_error("Property conversion failed.");
-  })",
-                    opClass.getClassName(), builderOpState);
-  }
   body << formatv(R"(
   ::llvm::SmallVector<::mlir::Type, 2> inferredReturnTypes;
   if (::mlir::succeeded({0}::inferReturnTypes(odsBuilder.getContext(),
@@ -2959,7 +3046,11 @@ void OpEmitter::genUseAttrAsResultTypeCollectiveParamBuilder(
   // If the builder is redundant, skip generating the method
   if (!m)
     return;
-  genInlineCreateBody(paramList);
+  bool deprecated = kind == CollectiveBuilderKind::AttrDict &&
+                    emitHelper.hasNonEmptyPropertiesStruct();
+  if (deprecated)
+    m->setDeprecated(legacyBuilderDeprecation);
+  genInlineCreateBody(paramList, deprecated);
 
   auto &body = m->body();
 
@@ -2975,6 +3066,10 @@ void OpEmitter::genUseAttrAsResultTypeCollectiveParamBuilder(
 
   if (kind == CollectiveBuilderKind::PropStruct) {
     body << "  ::mlir::Attribute typeAttr = properties."
+         << op.getGetterName(namedAttr.name) << "();\n";
+  } else if (emitHelper.hasNonEmptyPropertiesStruct()) {
+    genCodeForAddingPropertiesAndAttributes(body, kind, attributesName);
+    body << "  ::mlir::Attribute typeAttr = " << builderOpStateProperties << "."
          << op.getGetterName(namedAttr.name) << "();\n";
   } else {
     body << "  ::mlir::Attribute typeAttr;\n"
@@ -2992,14 +3087,9 @@ void OpEmitter::genUseAttrAsResultTypeCollectiveParamBuilder(
   // Operands
   body << "  " << builderOpState << ".addOperands(operands);\n";
 
-  // Properties
-  if (kind == CollectiveBuilderKind::PropStruct)
-    body << "  " << builderOpState
-         << ".useProperties(const_cast<Properties&>(properties));\n";
-
-  // Attributes
-  body << "  " << builderOpState << ".addAttributes(" << attributesName
-       << ");\n";
+  if (kind == CollectiveBuilderKind::PropStruct ||
+      !emitHelper.hasNonEmptyPropertiesStruct())
+    genCodeForAddingPropertiesAndAttributes(body, kind, attributesName);
 
   // Result types
   SmallVector<std::string, 2> resultTypes(op.getNumResults(), resultType);
@@ -3067,6 +3157,8 @@ void OpEmitter::genBuilder() {
   if (op.skipDefaultBuilders())
     return;
 
+  genLegacyPropertiesBuilderHelper();
+
   // We generate three classes of builders here:
   // 1. one having a stand-alone parameter for each operand / attribute, and
   genSeparateArgParamBuilder();
@@ -3126,7 +3218,11 @@ void OpEmitter::genCollectiveParamBuilder(CollectiveBuilderKind kind) {
   // If the builder is redundant, skip generating the method
   if (!m)
     return;
-  genInlineCreateBody(paramList);
+  bool deprecated = kind == CollectiveBuilderKind::AttrDict &&
+                    emitHelper.hasNonEmptyPropertiesStruct();
+  if (deprecated)
+    m->setDeprecated(legacyBuilderDeprecation);
+  genInlineCreateBody(paramList, deprecated);
   auto &body = m->body();
 
   // Operands
@@ -3137,14 +3233,7 @@ void OpEmitter::genCollectiveParamBuilder(CollectiveBuilderKind kind) {
          << "u && \"mismatched number of parameters\");\n";
   body << "  " << builderOpState << ".addOperands(operands);\n";
 
-  // Properties
-  if (kind == CollectiveBuilderKind::PropStruct)
-    body << "  " << builderOpState
-         << ".useProperties(const_cast<Properties&>(properties));\n";
-
-  // Attributes
-  body << "  " << builderOpState << ".addAttributes(" << attributesName
-       << ");\n";
+  genCodeForAddingPropertiesAndAttributes(body, kind, attributesName);
 
   // Create the correct number of regions
   if (int numRegions = op.getNumRegions()) {
@@ -3160,23 +3249,6 @@ void OpEmitter::genCollectiveParamBuilder(CollectiveBuilderKind kind) {
          << (numVariadicResults != 0 ? " >= " : " == ") << numNonVariadicResults
          << "u && \"mismatched number of return types\");\n";
   body << "  " << builderOpState << ".addTypes(resultTypes);\n";
-
-  if (emitHelper.hasNonEmptyPropertiesStruct() &&
-      kind == CollectiveBuilderKind::AttrDict) {
-    // Initialize the properties from Attributes before invoking the infer
-    // function.
-    body << formatv(R"(
-  if (!attributes.empty()) {
-    (void){1}.getOrAddProperties<{0}::Properties>();
-    ::mlir::PropertyRef properties = {1}.getRawProperties();
-    std::optional<::mlir::RegisteredOperationName> info =
-      {1}.name.getRegisteredInfo();
-    if (failed(info->setOpPropertiesFromAttribute({1}.name, properties,
-        {1}.attributes.getDictionary({1}.getContext()), nullptr)))
-      ::llvm::report_fatal_error("Property conversion failed.");
-  })",
-                    opClass.getClassName(), builderOpState);
-  }
 
   // Generate builder that infers type too.
   // TODO: Expand to handle successors.
