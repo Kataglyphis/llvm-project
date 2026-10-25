@@ -1,0 +1,11 @@
+name: Windows x64 · submodule pins (manual)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pins:
+    uses: Kataglyphis/ANTfrastructure/.github/workflows/submodule-pins.yml@develop
